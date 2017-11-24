@@ -1,0 +1,89 @@
+---
+title: "Machine Learning Assignment"
+author: "Michael Noetel"
+date: "24/11/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+### Summary
+Random forests were more robust to 10-fold cross-validation than Generalised Boosted Models, and all 10 models predicted the same outcomes from the testing data set, with very low expected out of sample errors.
+
+## Data Cleaning
+1. Import the data, removing NA and Div/0
+2. Include variables for which our testing set contains data, since random forests are not robust to missing values on predictors. This can be managed by other algorithms (e.g., RandomForestSRC) however for simplicity it is more clear to try using variables for which full data is available
+3. Select quanitative variables that would be useful for predicting the type of movement being performed. Timestamps and names should not be associated with technique.
+```{r cleaning, eval = FALSE}
+#Data Cleaning
+setwd("/Users/mnoetel/GitHub/machinelearning")
+training = read.csv("pml-training.csv", na.strings = c("NA", "#DIV/0!"))
+testing = read.csv("pml-testing.csv", na.strings = c("NA", "#DIV/0!"))
+
+#Remove variables with missing values
+library(dplyr)
+useful.rows <-  logical()
+for(i in 1:length(testing)){
+  if(sum(is.na(testing[[i]]))>1){
+    useful.rows[i] <- FALSE
+  } else { useful.rows[i] <- TRUE }
+}
+useful.rows
+complete.variables.training <- training[useful.rows]
+complete.variables.training <- complete.variables.training[,8:60]
+complete.variables.testing <- testing[useful.rows]
+complete.variables.testing <- complete.variables.testing[,8:60]
+str(complete.variables.testing)
+```
+## Model Selection with Cross Validation
+I tested both Generalised Boosted Models and Random Forests as methods of testing with these data. To choose the best model, I used 10-fold cross-validation because we had a large sample size and 10 folds optimises the trade-off between variance and bias with large samples. Since GBM had higher out-of-sample (OOS) errors I used Random Forests to predict on the testing set. For Random Forests, the mean accuracy following cross-validation was between 1 and .95, so expected OOS errors are very low (~.02). On the test cases, a vote-count approach was used from the 10 models from k-fold modelling, with 100% agreement from all 10 models.
+
+The code below took about 1hr to run, so rather than print the output, here's the code.
+
+```{r model, eval = FALSE}
+k <- 10
+library(dplyr)
+library(caret)
+library(randomForest)
+complete.variables.training <- complete.variables.training[sample(nrow(complete.variables.training)),]
+n = floor(nrow(complete.variables.training)/k)
+rf.err.vect = rep(NA, k)
+levels(complete.variables.testing$new_window) <- levels(complete.variables.training$new_window)
+levels(complete.variables.testing$cvtd_timestamp) <- levels(complete.variables.training$cvtd_timestamp)
+for(i in 1:k){
+  s1 <- ((i-1)*n+1)
+  s2 <- i*n
+  subset <- s1:s2
+  cv.train <- complete.variables.training[-subset,]
+  cv.test <- complete.variables.training[subset,]
+  rf.model <- randomForest(cv.train[,-53], cv.train[,53],
+                           do.trace = FALSE, ntree = 200,
+                           allow.parallel = TRUE,
+                           distribution = "multinomial")
+  predicted.classes <- predict(rf.model, newdata = cv.test[,-53], type = "class")
+  rf.err.vect[i] <- confusionMatrix(predicted.classes, cv.test[,53])[3]
+  print(predict(rf.model, newdata = complete.variables.testing[,-53], type = "class"))
+}
+
+#Check model superiority against GBM
+library(gbm)
+ntrees = 200
+gbm.err.vect = rep(NA, k)
+for(i in 1:k){
+  s1 = ((i-1)*n+1)
+  s2 = i*n
+  subset = s1:s2
+  cv.train = complete.variables.training[-subset,]
+  cv.test = complete.variables.training[subset,]
+  gbm.model = gbm.fit(x = cv.train[,-53], y = cv.train[,53],
+                       verbose = TRUE, n.trees = ntrees, shrinkage = 0.005,
+                       interaction.depth = 20, n.minobsinnode = 5, distribution = "multinomial",
+                       train.fraction = 0.5)
+  class.probabilities = predict(gbm.model, newdata = cv.test[,-53], n.trees = ntrees, type = "response")
+  predicted.classes = apply(class.probabilities, 1, which.max)
+  gbm.err.vect[i] = confusionMatrix(predicted.classes, as.numeric(cv.test[,53]))[3]
+}
+
+```
+
